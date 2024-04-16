@@ -1,0 +1,287 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Option 2 - Recipe Sharing Application Platform using HTTP
+
+Parameters:
+  InstanceType:
+    Description: EC2 instance type 
+    Type: String
+    Default: t3.micro
+    AllowedValues:
+      - t2.micro
+      - t3.micro
+      - t2.small
+      - t3.small
+    ConstraintDescription: must be a valid EC2 instance type.
+  
+  LatestAmiId:
+    Description: AMI for EC2 instance
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id
+
+  GitRepoURL:
+    Type: String
+    Description: URL of the Git repository to clone
+    Default: https://github.com/PacktPublishing/AWS-Cloud-Projects.git
+
+Resources:
+
+#BACKEND
+
+#DATA LAYER
+
+  RecipesTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH
+        BillingMode: PAY_PER_REQUEST
+        TableName: recipes
+
+#ROLE
+
+  EC2InstanceRolePolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:PutItem'
+                  - 'dynamodb:Scan'
+                  - 'dynamodb:DeleteItem'
+                Resource:
+                  - !GetAtt RecipesTable.Arn  
+
+  EC2InstanceRole:
+        Type: AWS::IAM::Role
+        Properties:
+          AssumeRolePolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Principal:
+                  Service:
+                    - ec2.amazonaws.com
+                Action:
+                  - 'sts:AssumeRole'
+          ManagedPolicyArns:
+            - !Ref EC2InstanceRolePolicy
+            - 'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2InstanceRole
+        
+#VPC CREATION
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      InstanceTenancy: default
+      Tags:
+        - Key: Name
+          Value: Chapter 3 VPC
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+#PUBLIC SUBNET
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: 10.0.0.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Public Subnet 1
+  
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Public Route Table
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+#SECURITY GROUPS
+
+  EC2InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP 
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref VPC
+ 
+#EC2 INSTANCE
+
+  EC2Instance:
+      Type: AWS::EC2::Instance
+      Properties:
+        ImageId: !Ref LatestAmiId
+        InstanceType: !Ref InstanceType
+        IamInstanceProfile: !Ref EC2InstanceProfile
+        NetworkInterfaces:
+          - AssociatePublicIpAddress: 'true'
+            DeviceIndex: '0'
+            GroupSet:
+              - !Ref EC2InstanceSecurityGroup
+            SubnetId: !Ref PublicSubnet1
+        UserData:
+          Fn::Base64:
+            !Sub |
+              #!/bin/bash
+              sudo apt update
+              sudo apt install -y python3 python3-pip python3-virtualenv nginx jq
+              git clone ${GitRepoURL}
+              cp -r $(echo "${GitRepoURL}" | sed 's/.*\///' | sed 's/\.git//')/chapter3/code/backend . ; rm -rf $(echo "${GitRepoURL}" | sed 's/.*\///' | sed 's/\.git//') ; cd backend
+              
+              sed -i "s/SELECTED_REGION/$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r '.region')/g" main.py
+              
+              # Create an Nginx configuration file
+              cat << EOF > /etc/nginx/sites-available/fastapi
+              server {
+              listen 80;
+              server_name ~.;
+              location / {
+              proxy_pass http://localhost:8000;
+              }
+              }
+              EOF
+              
+              sudo ln -s /etc/nginx/sites-available/fastapi /etc/nginx/sites-enabled/
+              sudo systemctl restart nginx
+              virtualenv .venv
+              source .venv/bin/activate
+              pip install -r requirements.txt
+              python3 -m uvicorn main:app &
+
+#FRONTEND
+
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Join
+      - "-"
+      - - "frontend-chapter-3"
+        - !Select
+          - 0
+          - !Split
+            - "-"
+            - !Select
+              - 2
+              - !Split
+                - "/"
+                - !Ref "AWS::StackId"
+      AccessControl: Private
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        
+  CloudFrontOriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: !Sub 'Origin Access Identity for ${AWS::StackName}'
+
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${CloudFrontOriginAccessIdentity.Id}'
+            Action: 's3:GetObject'
+            Resource: !Sub '${S3Bucket.Arn}/*'
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        DefaultCacheBehavior:
+          ForwardedValues:
+            QueryString: false
+          TargetOriginId: !Sub 'origin-${AWS::StackName}'
+          ViewerProtocolPolicy: redirect-to-https
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /
+            ErrorCachingMinTTL: 0
+        DefaultRootObject: index.html
+        Enabled: true
+        HttpVersion: 'http2'
+        IPV6Enabled: true
+        Origins:
+          - Id: !Sub 'origin-${AWS::StackName}'
+            DomainName: !GetAtt S3Bucket.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub 'origin-access-identity/cloudfront/${CloudFrontOriginAccessIdentity.Id}'
+        PriceClass: PriceClass_100
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+
+          
+
+#OUTPUTS
+
+Outputs:
+  
+  CloudFrontDistributionUrl:
+    Description: URL of the CloudFront distribution to Access your frontend
+    Value: !GetAtt CloudFrontDistribution.DomainName
+    Export:
+      Name: !Sub "${AWS::StackName}-CloudFrontDistributionUrl"
+  
+  CloudFrontDistributionId:
+    Description: The CloudFront Distribution ID
+    Value: !Ref CloudFrontDistribution
+
+  APIDNSName:
+    Description: Public DNS Name of the EC2 instance with your API
+    Value: !GetAtt EC2Instance.PublicDnsName
+    Export:
+      Name: PublicDNSName
+  
