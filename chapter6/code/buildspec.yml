@@ -1,0 +1,10 @@
+version: 0.2
+
+phases:
+  build:
+    commands:
+       - ls
+       - aws s3 sync . s3://my-english-assets-bucket
+       - aws s3 sync . s3://my-spanish-assets-bucket
+       - python translate.py en es index.html
+       - aws s3 cp es-index.html s3://my-spanish-assets-bucket/index.html
