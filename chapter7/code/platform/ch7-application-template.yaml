@@ -1,0 +1,1050 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Chapter 7 Resources
+
+Parameters:  
+
+  APIName:
+    Type: String
+    Default: meety-api
+    Description: API Name
+
+  UserPoolName:
+    Type: String
+    Default: chapter7-userpool
+    Description: The name for the Cognito User Pool
+
+  Username:
+    Type: String
+    Description: The username for the initial user
+  
+  UserEmail:
+    Type: String
+    Description: The email for the initial user
+
+Resources:
+
+#FRONTEND
+
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Join
+      - "-"
+      - - "frontend-chapter-7"
+        - !Select
+          - 0
+          - !Split
+            - "-"
+            - !Select
+              - 2
+              - !Split
+                - "/"
+                - !Ref "AWS::StackId"
+      AccessControl: Private
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        
+  CloudFrontOriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: !Sub 'Origin Access Identity for ${AWS::StackName}'
+
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${CloudFrontOriginAccessIdentity.Id}'
+            Action: 's3:GetObject'
+            Resource: !Sub '${S3Bucket.Arn}/*'
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        DefaultCacheBehavior:
+          ForwardedValues:
+            QueryString: false
+          TargetOriginId: !Sub 'origin-${AWS::StackName}'
+          ViewerProtocolPolicy: redirect-to-https
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /
+            ErrorCachingMinTTL: 0
+        DefaultRootObject: index.html
+        Enabled: true
+        HttpVersion: 'http2'
+        IPV6Enabled: true
+        Origins:
+          - Id: !Sub 'origin-${AWS::StackName}'
+            DomainName: !GetAtt S3Bucket.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub 'origin-access-identity/cloudfront/${CloudFrontOriginAccessIdentity.Id}'
+        PriceClass: PriceClass_100
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+
+#BACKEND
+
+#DATA LAYER
+
+  MeetingsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: Meetings
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: meetingId
+          AttributeType: S
+        - AttributeName: status
+          AttributeType: S
+        - AttributeName: date
+          AttributeType: S
+      KeySchema:
+        - AttributeName: meetingId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: StatusIndex
+          KeySchema:
+            - AttributeName: status
+              KeyType: HASH
+            - AttributeName: date
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+#AUTHENTICATION
+
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Ref UserPoolName
+      AutoVerifiedAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 6
+          RequireLowercase: false
+          RequireNumbers: false
+          RequireSymbols: false
+          RequireUppercase: false
+      MfaConfiguration: "OFF"
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+        InviteMessageTemplate:
+          EmailMessage: "Hello {username} from the Chatbot Application.\nYour temporary password is {####}"
+          EmailSubject: "Chapter7 - Your temporary password"
+      EmailConfiguration:
+        EmailSendingAccount: COGNITO_DEFAULT
+      Schema:
+        - Name: email
+          Required: true
+          Mutable: true
+
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: my-user-pool-client
+      GenerateSecret: false
+      UserPoolId: !Ref CognitoUserPool
+
+  CognitoUserPoolUser:
+    Type: AWS::Cognito::UserPoolUser
+    Properties:
+      UserAttributes:
+        - Name: email
+          Value: !Ref UserEmail
+      UserPoolId: !Ref CognitoUserPool
+      Username: !Ref Username
+      DesiredDeliveryMediums:
+        - EMAIL
+
+#API
+
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Ref APIName
+      ProtocolType: HTTP
+      Description: Meeti API
+      CorsConfiguration:
+        AllowOrigins:
+          - '*'
+        AllowMethods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+        AllowHeaders:
+          - '*'
+
+  HttpApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: dev
+      AutoDeploy: true
+
+  JWTAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      ApiId: !Ref HttpApi
+      Name: CognitoAuthorizer
+      AuthorizerType: JWT
+      IdentitySource:
+        - "$request.header.Authorization"
+      JwtConfiguration:
+        Audience:
+          - !Ref CognitoUserPoolClient
+        Issuer: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${CognitoUserPool}"
+
+
+#1 - GET MEETINGS ROUTE
+
+#PERMISSIONS
+
+  LambdaExecutionRoleGetMeetings:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+      - PolicyName: DynamoDBReadAccess
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - 'dynamodb:GetItem'
+                - 'dynamodb:Query'
+              Resource:
+                - !GetAtt MeetingsTable.Arn
+                - !Join
+                  - ''
+                  - - !GetAtt MeetingsTable.Arn
+                    - '/index/StatusIndex'
+
+  GetMeetingsLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref GetMeetingsLambdaFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Join
+        - ''
+        - - 'arn:aws:execute-api:'
+          - !Ref 'AWS::Region'
+          - ':'
+          - !Ref 'AWS::AccountId'
+          - ':'
+          - !Ref HttpApi
+          - '/*/*'
+
+#LAMBDA
+
+  GetMeetingsLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: get-meetings
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Code:
+        ZipFile: !Sub |
+          import boto3
+          from datetime import datetime, timedelta
+          import json
+
+          dynamodb = boto3.resource('dynamodb')
+          table = dynamodb.Table('Meetings')
+
+          def lambda_handler(event, context):
+              
+              start_date_str = event['queryStringParameters'].get('startDate')
+              end_date_str = event['queryStringParameters'].get('endDate')
+              
+              if not start_date_str or not end_date_str:
+                  return {
+                      'statusCode': 400,
+                      'body': json.dumps('Missing required query parameters: startDate or endDate')
+                  }
+              
+              start_date = datetime.fromisoformat(start_date_str)
+              start_date = start_date - timedelta(days=1)
+              end_date = datetime.fromisoformat(end_date_str)
+
+              
+              response = table.query(
+                  IndexName='StatusIndex',
+                  KeyConditionExpression=boto3.dynamodb.conditions.Key('status').eq('approved') & boto3.dynamodb.conditions.Key('date').between(start_date.isoformat(), end_date.isoformat())
+              )
+
+              approved_meetings = response['Items']
+
+              while 'LastEvaluatedKey' in response:
+                  response = table.query(
+                      IndexName='StatusIndex',
+                      KeyConditionExpression=boto3.dynamodb.conditions.Key('status').eq('approved') & boto3.dynamodb.conditions.Key('date').between(start_date.isoformat(), end_date.isoformat()),
+                      ExclusiveStartKey=response['LastEvaluatedKey']
+                  )
+                  approved_meetings.extend(response['Items'])
+
+              return approved_meetings
+
+      Role: !GetAtt LambdaExecutionRoleGetMeetings.Arn
+      Timeout: 60
+
+#ROUTE
+  
+  HttpApiGetMeetingsRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: GET /meetings
+      Target: !Join
+        - /
+        - - integrations
+          - !Ref HttpApiGetMeetingsIntegration
+      AuthorizationType: JWT
+      AuthorizerId: !Ref JWTAuthorizer
+    
+  HttpApiGetMeetingsIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GetMeetingsLambdaFunction.Arn}/invocations'
+      PayloadFormatVersion: '2.0'
+
+#2 - GET PENDING MEETINGS ROUTE
+
+#PERMISSIONS
+
+  LambdaExecutionRoleGetPendingMeetings:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+      - PolicyName: DynamoDBReadAccess
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - 'dynamodb:GetItem'
+                - 'dynamodb:Query'
+              #Resource:
+              #  - !GetAtt MeetingsTable.Arn
+              Resource:
+                - !GetAtt MeetingsTable.Arn
+                - !Join
+                  - ''
+                  - - !GetAtt MeetingsTable.Arn
+                    - '/index/StatusIndex'
+                
+
+  GetPendingMeetingsLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref GetPendingMeetingsLambdaFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Join
+        - ''
+        - - 'arn:aws:execute-api:'
+          - !Ref 'AWS::Region'
+          - ':'
+          - !Ref 'AWS::AccountId'
+          - ':'
+          - !Ref HttpApi
+          - '/*/*'
+
+#LAMBDA
+
+  GetPendingMeetingsLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: get-pending-meetings
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Code:
+        ZipFile: !Sub |
+          import boto3
+
+          dynamodb = boto3.resource('dynamodb')
+          table = dynamodb.Table('Meetings')
+
+          def lambda_handler(event, context):
+              response = table.query(
+                  IndexName='StatusIndex',
+                  KeyConditionExpression=boto3.dynamodb.conditions.Key('status').eq('pending')
+              )
+
+              pending_meetings = response['Items']
+
+              while 'LastEvaluatedKey' in response:
+                  response = table.query(
+                      IndexName='StatusIndex',
+                      KeyConditionExpression=boto3.dynamodb.conditions.Key('status').eq('pending'),
+                      ExclusiveStartKey=response['LastEvaluatedKey']
+                  )
+                  pending_meetings.extend(response['Items'])
+
+              return pending_meetings
+
+      Role: !GetAtt LambdaExecutionRoleGetPendingMeetings.Arn
+      Timeout: 60
+
+#ROUTE
+  
+  HttpApiGetPendingMeetingsRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: GET /pending
+      Target: !Join
+        - /
+        - - integrations
+          - !Ref HttpApiGetPendingMeetingsIntegration
+      AuthorizationType: JWT
+      AuthorizerId: !Ref JWTAuthorizer
+    
+  HttpApiGetPendingMeetingsIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GetPendingMeetingsLambdaFunction.Arn}/invocations'
+      PayloadFormatVersion: '2.0'
+
+
+#3 - PUT MEETING ROUTE
+
+#PERMISSIONS
+
+  LambdaExecutionRoleChangeMeetingStatus:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+      - PolicyName: DynamoDBReadAccess
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - 'dynamodb:UpdateItem'
+                - 'dynamodb:DescribeTable'
+              Resource:
+                - !GetAtt MeetingsTable.Arn
+
+  ChangeMeetingStatusLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ChangeMeetingStatusLambdaFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Join
+        - ''
+        - - 'arn:aws:execute-api:'
+          - !Ref 'AWS::Region'
+          - ':'
+          - !Ref 'AWS::AccountId'
+          - ':'
+          - !Ref HttpApi
+          - '/*/*'
+
+#LAMBDA
+
+  ChangeMeetingStatusLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: change-meeting-status
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Code:
+        ZipFile: !Sub |
+          import boto3
+          import json
+
+          dynamodb = boto3.resource('dynamodb')
+          table = dynamodb.Table('Meetings')
+
+          def lambda_handler(event, context):
+              
+              request_body = json.loads(event['body'])
+              meeting_id = request_body['meetingId']
+              new_status = request_body['newStatus']
+
+              try:
+                  response = table.update_item(
+                      Key={
+                          'meetingId': meeting_id
+                      },
+                      UpdateExpression='SET #status = :new_status',
+                      ExpressionAttributeNames={
+                          '#status': 'status'
+                      },
+                      ExpressionAttributeValues={
+                          ':new_status': new_status
+                      },
+                      ReturnValues='ALL_NEW'
+                      )
+                      # Return the updated item
+                  updated_item = response['Attributes']
+
+                  return {
+                          'statusCode': 200,
+                          'body': 'status successfully changed'
+                      }
+              except Exception as e:
+                  print(e)
+                  return {
+                      'statusCode': 500,
+                      'body': 'Failed to update meeting status'
+                  }
+      Role: !GetAtt LambdaExecutionRoleChangeMeetingStatus.Arn
+      Timeout: 60
+
+#ROUTE
+  
+  HttpApiPutStatusRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: PUT /status
+      Target: !Join
+        - /
+        - - integrations
+          - !Ref HttpApiPutMeetingStatusIntegration
+      AuthorizationType: JWT
+      AuthorizerId: !Ref JWTAuthorizer
+    
+  HttpApiPutMeetingStatusIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ChangeMeetingStatusLambdaFunction.Arn}/invocations'
+      PayloadFormatVersion: '2.0'
+
+#4 - CHATBOT ROUTE
+
+#PERMISSIONS
+
+  LambdaExecutionRoleChatbot:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AmazonLexFullAccess
+
+  ChatbotLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ChatbotLambdaFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Join
+        - ''
+        - - 'arn:aws:execute-api:'
+          - !Ref 'AWS::Region'
+          - ':'
+          - !Ref 'AWS::AccountId'
+          - ':'
+          - !Ref HttpApi
+          - '/*/*'
+
+#LAMBDA
+
+  ChatbotLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: chatbot-meety
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Code:
+        ZipFile: !Sub |
+          import json
+          import boto3
+
+          bot = boto3.client('lexv2-runtime')
+
+          def lambda_handler(event, context):
+
+              user_input = json.loads(event['body'])['message']
+
+              response = bot.recognize_text(
+                  botId = '${MeetyBot}',
+                  botAliasId='TSTALIASID',
+                  localeId='en_US',
+                  sessionId='your_session_id',
+                  text = user_input
+              )
+
+              bot_response = response['messages'][0]['content']
+
+              return {
+                  'statusCode': 200,
+                  'headers': {
+                      'Access-Control-Allow-Origin': '*',
+                      'Access-Control-Allow-Credentials': True,
+                  },
+
+                  'body': json.dumps({'botResponse': bot_response})
+              }
+      Role: !GetAtt LambdaExecutionRoleChatbot.Arn
+      Timeout: 60
+
+#ROUTE
+  
+  HttpApiChatbotRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: POST /chatbot
+      Target: !Join
+        - /
+        - - integrations
+          - !Ref HttpApiChatbotIntegration
+    
+  HttpApiChatbotIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ChatbotLambdaFunction.Arn}/invocations'
+      PayloadFormatVersion: '2.0'
+
+#LEX
+
+ # LEX BOT IAM ROLE
+  
+  MeetyRuntimeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lexv2.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+      Policies:
+        - PolicyName: LexRuntimeRolePolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "polly:SynthesizeSpeech"
+                  - "comprehend:DetectSentiment"
+                Resource: "*"
+
+  # LEX BOT
+
+  MeetyBot:
+    DependsOn: MeetyRuntimeRole
+    Type: AWS::Lex::Bot
+    Properties:
+      Name: MeetyBot
+      Description: Meety chatbot
+      RoleArn: !GetAtt MeetyRuntimeRole.Arn
+      DataPrivacy:
+        ChildDirected: false
+      IdleSessionTTLInSeconds: 300
+      AutoBuildBotLocales: false
+      BotLocales:
+        - LocaleId: "en_US"
+          Description: "Meety"
+          NluConfidenceThreshold: 0.60
+          VoiceSettings:
+            VoiceId: "Ivy"
+          SlotTypes:
+            - Name: "MeetingDuration"
+              Description: "Meeting Duration"
+              SlotTypeValues:
+                - SampleValue:
+                    Value: 30
+                - SampleValue:
+                    Value: 60
+              ValueSelectionSetting:
+                ResolutionStrategy: ORIGINAL_VALUE
+          Intents:
+            - Name: "StartMeety"
+              Description: "Welcome intent"
+              SampleUtterances:
+                - Utterance: "Hello"
+                - Utterance: "Hey Meety"
+                - Utterance: "I need your help"
+              IntentClosingSetting:
+                IsActive: True
+                ClosingResponse: 
+                  MessageGroupsList:
+                    - Message:
+                        PlainTextMessage:
+                          Value: "Hey, I'm meety, the chatbot to help scheduling meetings. How can I help you?"
+            - Name: "BookMeeting"
+              Description: "Book a meeting"
+              SampleUtterances:
+                - Utterance: "i want to book a meeting"
+                - Utterance: "Can i book a slot?"
+                - Utterance: "can you help me book a meeting?"
+              SlotPriorities:
+                - Priority: 1
+                  SlotName: FullName
+                - Priority: 2
+                  SlotName: MeetingDate
+                - Priority: 3
+                  SlotName: MeetingTime
+                - Priority: 4
+                  SlotName: MeetingDuration
+                - Priority: 5
+                  SlotName: AttendeeEmail
+              IntentConfirmationSetting:
+                PromptSpecification:
+                  MessageGroupsList:
+                    - Message:
+                        PlainTextMessage:
+                          Value: "Do you want to proceed with the meeting?"
+                  MaxRetries: 3
+                  AllowInterrupt: true
+                DeclinationResponse:
+                  MessageGroupsList:
+                    - Message:
+                        PlainTextMessage:
+                          Value: "No worries, I will cancel the request. Please let me know if you want me to restart the process!"
+                  AllowInterrupt: false
+              Slots:
+                - Name: "FullName"
+                  Description: "User Name"
+                  SlotTypeName: "AMAZON.FirstName"
+                  ValueElicitationSetting:
+                    SlotConstraint: "Required"
+                    PromptSpecification:
+                      MessageGroupsList:
+                        - Message:
+                            PlainTextMessage:
+                              Value: "What is your name?"
+                      MaxRetries: 3
+                      AllowInterrupt: false
+                - Name: "MeetingDate"
+                  Description: "Meeting Date"
+                  SlotTypeName: "AMAZON.Date"
+                  ValueElicitationSetting:
+                    SlotConstraint: "Required"
+                    PromptSpecification:
+                      MessageGroupsList:
+                        - Message:
+                            PlainTextMessage:
+                              Value: "When do you want to meet?"
+                      MaxRetries: 3
+                      AllowInterrupt: false
+                - Name: "MeetingTime"
+                  Description: "Meeting Time"
+                  SlotTypeName: "AMAZON.Time"
+                  ValueElicitationSetting:
+                    SlotConstraint: "Required"
+                    PromptSpecification:
+                      MessageGroupsList:
+                        - Message:
+                            PlainTextMessage:
+                              Value: "What time?"
+                      MaxRetries: 3
+                      AllowInterrupt: false
+                - Name: "MeetingDuration"
+                  Description: "Meeting Duration"
+                  SlotTypeName: "MeetingDuration"
+                  ValueElicitationSetting:
+                    SlotConstraint: "Required"
+                    PromptSpecification:
+                      MessageGroupsList:
+                        - Message:
+                            PlainTextMessage:
+                              Value: "How long do you want to meet in minutes? (30 or 60)"
+                      MaxRetries: 3
+                      AllowInterrupt: false
+                - Name: "AttendeeEmail"
+                  Description: "Attendee Email"
+                  SlotTypeName: "AMAZON.EmailAddress"
+                  ValueElicitationSetting:
+                    SlotConstraint: "Required"
+                    PromptSpecification:
+                      MessageGroupsList:
+                        - Message:
+                            PlainTextMessage:
+                              Value: "Please provide me your email address."
+                      MaxRetries: 3
+                      AllowInterrupt: false
+            - Name: "FallbackIntent"
+              Description: "Default intent when no other intent matches"
+              ParentIntentSignature: "AMAZON.FallbackIntent"
+              IntentClosingSetting:
+                IsActive: True
+                ClosingResponse: 
+                  MessageGroupsList:
+                    - Message:
+                        PlainTextMessage:
+                          Value: "Sorry, i did not get it. I am an expert in scheduling meetings. Do you need help with that?"
+
+#LEX LAMBDA FUNCTION
+
+  LexLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+      - PolicyName: DynamoDBAccess
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - 'dynamodb:PutItem'
+                - 'dynamodb:Query'
+              Resource:
+                - !GetAtt MeetingsTable.Arn
+                - !Join
+                  - ''
+                  - - !GetAtt MeetingsTable.Arn
+                    - '/index/StatusIndex'
+
+  LexLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: bot-function-meety
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Code:
+        ZipFile: !Sub |
+          import json
+          import decimal 
+          import boto3
+          from datetime import datetime, timedelta
+          from boto3.dynamodb.conditions import Key, Attr
+          import uuid
+
+          dynamodb = boto3.resource('dynamodb')
+          table = dynamodb.Table('Meetings')
+
+          def get_session_attributes(intent_request):
+              sessionState = intent_request['sessionState']
+              if 'sessionAttributes' in sessionState:
+                  return sessionState['sessionAttributes']
+
+              return {}
+
+          def get_slots(intent_request):
+              return intent_request['sessionState']['intent']['slots']
+              
+          def get_slot(intent_request, slotName):
+              slots = get_slots(intent_request)
+              if slots is not None and slotName in slots and slots[slotName] is not None:
+                  return slots[slotName]['value']['interpretedValue']
+              else:
+                  return None    
+                  
+          def close(intent_request, session_attributes, fulfillment_state, message):
+              intent_request['sessionState']['intent']['state'] = fulfillment_state
+              return {
+                  'sessionState': {
+                      'sessionAttributes': session_attributes,
+                      'dialogAction': {
+                          'type': 'Close'
+                      },
+                      'intent': intent_request['sessionState']['intent']
+                  },
+                  'messages': [message],
+                  'sessionId': intent_request['sessionId'],
+                  'requestAttributes': intent_request['requestAttributes'] if 'requestAttributes' in intent_request else None,
+                  
+              }
+
+          def calculate_end_time(start_time_str, duration_minutes):
+              
+              start_time = datetime.strptime(start_time_str, '%H:%M').time()
+              end_time = (datetime.combine(datetime.min, start_time) + timedelta(minutes=duration_minutes)).time()
+              end_time_str = end_time.strftime('%H:%M')
+              
+              return end_time_str
+              
+          def check_meeting_slot(prop_date, prop_start, prop_dur):
+
+              proposed_date = datetime.strptime(prop_date, '%Y-%m-%d').date()
+              proposed_start_time = datetime.strptime(prop_start, '%H:%M').time()
+              proposed_end_time = (datetime.combine(proposed_date, proposed_start_time) + timedelta(minutes=prop_dur)).time()
+              proposed_start = datetime.combine(proposed_date, proposed_start_time)
+              proposed_end = datetime.combine(proposed_date, proposed_end_time)
+              start_time_str = proposed_start_time.strftime('%H:%M')
+              end_time_str = proposed_end_time.strftime('%H:%M')
+              query_response = table.query(
+                  IndexName='StatusIndex',
+                  KeyConditionExpression=Key('status').eq('approved') & Key('date').eq(proposed_date.isoformat()),
+                  FilterExpression=(Attr('startTime').gt(start_time_str) & Attr('startTime').lt(end_time_str)) | Attr('startTime').eq(start_time_str) |(Attr('endTime').gt(start_time_str) & Attr('endTime').lt(end_time_str))
+              )
+              
+              conflicting_meetings = query_response['Items']
+
+              if query_response['Items']:
+                  return False
+              else:
+                  return True
+
+          def create_meeting(intent_request):
+              
+              session_attributes = get_session_attributes(intent_request)
+              slots = get_slots(intent_request)
+
+              proposed_date = get_slot(intent_request, 'MeetingDate')
+              proposed_start_time = get_slot(intent_request, 'MeetingTime')
+              proposed_duration = get_slot(intent_request, 'MeetingDuration')
+              email = get_slot(intent_request, 'AttendeeEmail')
+              name = get_slot(intent_request, 'FullName')
+
+              meeting_id = str(uuid.uuid4())
+              proposed_end_time = calculate_end_time(proposed_start_time,int(proposed_duration))
+              
+              is_conflict = not check_meeting_slot(proposed_date, proposed_start_time, int(proposed_duration))
+
+              item = {
+                  'meetingId': meeting_id,
+                  'attendeeName': name,
+                  'email': email,
+                  'date': proposed_date,
+                  'duration': proposed_duration,
+                  'startTime': proposed_start_time,
+                  'endTime': proposed_end_time,
+                  'status': 'pending',
+                  'isConflict': is_conflict
+              }
+
+              table.put_item(Item=item)
+
+              text = f"Thank you {name}. Your meeting request for {proposed_date} from {proposed_start_time} to {proposed_end_time} has been created. Have a nice day!"
+              message = {
+                  'contentType': 'PlainText',
+                  'content': text
+              }
+
+              return close(intent_request, session_attributes, "Fulfilled", message)
+
+          def handle_req(intent_request):
+              intent_name = intent_request['sessionState']['intent']['name']
+              response = None
+              if intent_name == 'BookMeeting':
+                  return create_meeting(intent_request)
+              else: 
+                  return response
+
+          def lambda_handler(event, context):
+              response = handle_req(event)
+              return response
+            
+
+      Role: !GetAtt LexLambdaExecutionRole.Arn
+      Timeout: 60
+
+  LexLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LexLambdaFunction
+      Action: lambda:InvokeFunction
+      Principal: lexv2.amazonaws.com
+      SourceArn: !Sub "arn:aws:lex:us-west-2:${AWS::AccountId}:bot-alias/${MeetyBot}/TSTALIASID"
+
+#OUTPUTS
+
+Outputs:
+
+  CognitoUserPoolId:
+    Description: The ID of the Cognito User Pool
+    Value: !Ref CognitoUserPool
+    Export:
+      Name: !Sub "${AWS::StackName}-CognitoUserPoolId"
+
+  ClientId:
+    Description: The client ID for the Cognito User Pool app client
+    Value: !Ref CognitoUserPoolClient
+    Export:
+      Name: !Sub "${AWS::StackName}-CognitoUserPoolClientId"
+
+  ApiUrl:
+    Description: The URL of the HTTP API
+    Value: !Join
+      - ''
+      - - 'https://'
+        - !Ref HttpApi
+        - '.execute-api.'
+        - !Ref 'AWS::Region'
+        - '.amazonaws.com/'
+        - !Ref HttpApiStage
+
+  CloudFrontDistributionUrl:
+    Description: URL of the CloudFront distribution to Access your frontend
+    Value: !GetAtt CloudFrontDistribution.DomainName
+    Export:
+      Name: !Sub "${AWS::StackName}-CloudFrontDistributionUrl"

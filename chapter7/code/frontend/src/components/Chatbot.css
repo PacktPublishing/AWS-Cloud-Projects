@@ -1,0 +1,58 @@
+.chatbot-icon {
+    position: relative;
+  }
+  
+
+  .user-message {
+    text-align: left;
+    margin-right: auto;
+    margin-bottom: 0.5rem;
+  }
+  
+  .bot-message {
+    text-align: right;
+    margin-left: auto;
+    margin-bottom: 0.5rem;
+  }
+
+
+  .user-message .MuiListItemText-root {
+    text-align: left;
+  }
+  
+  .bot-message .MuiListItemText-root {
+    text-align: right;
+  }
+  
+  .chatbot-icon::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 100%;
+    height: 100%;
+    background-color: rgba(33, 150, 243, 0.2);
+    border-radius: 50%;
+    animation: pulseAnimation 2s infinite;
+  }
+
+  .message-list {
+  max-height: 300px; 
+  overflow-y: auto;
+}
+  
+  @keyframes pulseAnimation {
+    0% {
+      transform: translate(-50%, -50%) scale(1);
+      opacity: 0.2;
+    }
+    50% {
+      transform: translate(-50%, -50%) scale(1.8); 
+      opacity: 0.8; 
+    }
+    100% {
+      transform: translate(-50%, -50%) scale(1);
+      opacity: 0.2;
+    }
+  }
