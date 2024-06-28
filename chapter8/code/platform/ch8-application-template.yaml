@@ -1,0 +1,319 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Chapter 8 - Clickstream Generator
+Parameters:
+  InstanceType:
+    Description: EC2 instance type 
+    Type: String
+    Default: t3.micro
+    AllowedValues:
+      - t2.micro
+      - t3.micro
+      - t2.small
+      - t3.small
+    ConstraintDescription: must be a valid EC2 instance type.
+
+  LatestAmiId:
+    Description: AMI for EC2 instance
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id
+
+  GitRepoURL:
+    Type: String
+    Description: URL of the Git repository to clone
+    Default: https://github.com/PacktPublishing/AWS-Cloud-Projects.git
+
+Resources:
+
+#ROLES
+
+        
+#VPC CREATION
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      InstanceTenancy: default
+      Tags:
+        - Key: Name
+          Value: Chapter 8 VPC
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+#PUBLIC SUBNET
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: 10.0.0.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Public Subnet 1
+  
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Public Route Table
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+#SECURITY GROUPS
+
+  EC2InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP 
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref VPC
+ 
+#C9 ENVIRONMENT
+
+  Cloud9Environment:
+    Type: AWS::Cloud9::EnvironmentEC2
+    Properties:
+      AutomaticStopTimeMinutes: 60
+      Description: Cloud9 Environment for Chapter 8 - Clickstream Generator
+      InstanceType: t3.small
+      Name: !Sub 'Cloud9Env-${AWS::StackName}'
+      SubnetId: !Ref PublicSubnet1
+      ImageId: 'resolve:ssm:/aws/service/cloud9/amis/amazonlinux-2023-x86_64'
+
+
+#Storage
+
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Join
+      - "-"
+      - - "chapter-8-clickstream"
+        - !Select
+          - 0
+          - !Split
+            - "-"
+            - !Select
+              - 2
+              - !Split
+                - "/"
+                - !Ref "AWS::StackId"
+      AccessControl: Private
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+          
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: clickstream_db
+  
+  GlueTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref GlueDatabase
+      TableInput:
+        Name: clickstream_table
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          skip.header.line.count: 1
+          classification: "csv"
+        StorageDescriptor:
+          Columns:
+            - Name: user_age
+              Type: bigint
+            - Name: continent
+              Type: string
+            - Name: country-name
+              Type: string
+            - Name: user_action
+              Type: string
+            - Name: product_category
+              Type: string
+            - Name: event_type
+              Type: string
+            - Name: click-date
+              Type: string
+            - Name: user_id
+              Type: string
+          Location: !Sub "s3://${S3Bucket}/results/"
+          InputFormat: org.apache.hadoop.mapred.TextInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.IgnoreKeyTextOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
+            Parameters:
+              field.delim: ","
+    DependsOn: GlueDatabase
+  
+  ClickstreamBucketParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: clickstream_bucket
+      Type: String
+      Value: !Ref S3Bucket
+
+
+#EC2
+#ROLE
+
+#ADD NECESSARY PERMISSIONS
+  EC2InstanceRolePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - 's3:PutObject'
+              - 's3:GetObject'
+            Resource:
+              - !Sub 'arn:aws:s3:::${S3Bucket}/*'
+              - !GetAtt S3Bucket.Arn
+
+  EC2InstanceRole:
+        Type: AWS::IAM::Role
+        Properties:
+          AssumeRolePolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Principal:
+                  Service:
+                    - ec2.amazonaws.com
+                Action:
+                  - 'sts:AssumeRole'
+          ManagedPolicyArns:
+            - !Ref EC2InstanceRolePolicy
+            - 'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2InstanceRole
+        
+ 
+#EC2 INSTANCE
+
+  EC2Instance:
+      Type: AWS::EC2::Instance
+      Properties:
+        ImageId: !Ref LatestAmiId
+        InstanceType: t3.micro
+        IamInstanceProfile: !Ref EC2InstanceProfile
+        NetworkInterfaces:
+          - AssociatePublicIpAddress: 'true'
+            DeviceIndex: '0'
+            GroupSet:
+              - !Ref EC2InstanceSecurityGroup
+            SubnetId: !Ref PublicSubnet1
+        UserData:
+          Fn::Base64:
+            !Sub |
+              #!/bin/bash
+              sudo apt update
+              sudo apt-get install -y unzip awscli
+              git clone ${GitRepoURL}
+              cp -r $(echo "${GitRepoURL}" | sed 's/.*\///' | sed 's/\.git//')/chapter8/code/aux . ; rm -rf $(echo "${GitRepoURL}" | sed 's/.*\///' | sed 's/\.git//') ; cd aux
+              aws s3 cp --recursive  . s3://${S3Bucket}/aux
+              aws s3 cp  job.py s3://${S3Bucket}/glue-script/
+              aws s3 cp  countries_continents.csv s3://${S3Bucket}/reference/
+              echo "git clone ${GitRepoURL}" > instructions.txt
+              echo "cd $(echo "${GitRepoURL}" | sed 's/.*\///' | sed 's/\.git//')/chapter8/code/aux" >> instructions.txt
+              echo "pip install -r requirements.txt" >> instructions.txt
+              aws s3 cp  instructions.txt s3://${S3Bucket}/aux/
+              
+        Tags:
+          - Key: Name
+            Value: Chapter 8 EC2
+              
+  GlueJobPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'glue:StartJobRun'
+              - 'glue:GetJobRun'
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - 's3:GetObject'
+              - 's3:PutObject'
+              - 's3:DeleteObject'
+            Resource:
+              - !Sub 'arn:aws:s3:::${S3Bucket}/*'
+              - !GetAtt S3Bucket.Arn
+          - Effect: Allow
+            Action:
+              - 'ssm:GetParameter'
+            Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/clickstream_bucket'
+
+  GlueJobRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: 'chapter8-glue-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - glue.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - !Ref GlueJobPolicy
+        - 'arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole'
+
+  GlueJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: chapter8-gluejob
+      Role: !Ref GlueJobRole
+      Command:
+        Name: glueetl
+        ScriptLocation: !Sub 's3://${S3Bucket}/glue-script/job.py'
+      DefaultArguments:
+        '--job-bookmark-option': 'job-bookmark-disable'
+        '--extra-py-files': !Join [',', ['s3://aws-glue-studio-transforms-818035625594-prod-us-west-2/gs_common.py', 's3://aws-glue-studio-transforms-818035625594-prod-us-west-2/gs_to_timestamp.py']]
+      MaxRetries: 0
+      Timeout: 2880
+      GlueVersion: '4.0'
