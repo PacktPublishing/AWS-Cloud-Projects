@@ -6,10 +6,10 @@ variable "es_bucket_name" {
   type    = string
 }
 
-variable "code_repository_name" {
+variable "codepipeline_bucket_name" {
   type    = string
 }
 
-variable "codepipeline_bucket_name" {
+variable "github_repository_url" {
   type    = string
 }

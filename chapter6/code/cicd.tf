@@ -1,5 +1,6 @@
-resource "aws_codecommit_repository" "test" {
-  repository_name = var.code_repository_name
+resource "aws_codestarconnections_connection" "codestar_connection" {
+  name          = "app-dev-codestar"
+  provider_type = "GitHub"
 }
 
 resource "aws_codepipeline" "codepipeline" {
@@ -13,19 +14,17 @@ resource "aws_codepipeline" "codepipeline" {
 
   stage {
     name = "Source"
-
     action {
       name             = "Source"
       category         = "Source"
       owner            = "AWS"
-      provider         = "CodeCommit"
+      provider         = "CodeStarSourceConnection"
       version          = "1"
       output_artifacts = ["source_output"]
-
       configuration = {
-        RepositoryName       = var.code_repository_name
-        BranchName           = "main"
-        PollForSourceChanges = true
+        ConnectionArn    = aws_codestarconnections_connection.codestar_connection.arn
+        FullRepositoryId = var.github_repository_url 
+        BranchName       = "main"
       }
     }
   }
@@ -91,14 +90,7 @@ data "aws_iam_policy_document" "codepipeline_policy" {
 
   statement {
     actions = [
-      "codecommit:BatchGet*",
-      "codecommit:BatchDescribe*",
-      "codecommit:Describe*",
-      "codecommit:Get*",
-      "codecommit:List*",
-      "codecommit:GitPull",
-      "codecommit:UploadArchive",
-      "codecommit:GetBranch",
+      "codestar-connections:UseConnection"
     ]
 
     resources = [
