@@ -405,7 +405,7 @@ Resources:
       Runtime: python3.9
       Handler: index.lambda_handler
       Code:
-        ZipFile: !Sub |
+        ZipFile: |
           import json
           import boto3
           from typing import List, Dict
