@@ -97,19 +97,6 @@ Resources:
           CidrIp: 0.0.0.0/0
       VpcId: !Ref VPC
  
-#C9 ENVIRONMENT
-
-  Cloud9Environment:
-    Type: AWS::Cloud9::EnvironmentEC2
-    Properties:
-      AutomaticStopTimeMinutes: 60
-      Description: Cloud9 Environment for Chapter 8 - Clickstream Generator
-      InstanceType: t3.small
-      Name: !Sub 'Cloud9Env-${AWS::StackName}'
-      SubnetId: !Ref PublicSubnet1
-      ImageId: 'resolve:ssm:/aws/service/cloud9/amis/amazonlinux-2023-x86_64'
-
-
 #Storage
 
   S3Bucket:
@@ -127,7 +114,6 @@ Resources:
               - !Split
                 - "/"
                 - !Ref "AWS::StackId"
-      AccessControl: Private
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -177,7 +163,6 @@ Resources:
             SerializationLibrary: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
             Parameters:
               field.delim: ","
-    DependsOn: GlueDatabase
   
   ClickstreamBucketParameter:
     Type: AWS::SSM::Parameter
@@ -234,7 +219,7 @@ Resources:
       Type: AWS::EC2::Instance
       Properties:
         ImageId: !Ref LatestAmiId
-        InstanceType: t3.micro
+        InstanceType: !Ref InstanceType
         IamInstanceProfile: !Ref EC2InstanceProfile
         NetworkInterfaces:
           - AssociatePublicIpAddress: 'true'
