@@ -1,11 +1,11 @@
 import sys
-from awsglue.transforms import *
+from awsglue.transforms import SelectFields, Join, ApplyMapping
 from awsglue.utils import getResolvedOptions
 from pyspark.context import SparkContext
 from awsglue.context import GlueContext
 from awsglue.job import Job
 import gs_to_timestamp
-import boto3  
+import boto3
 
 args = getResolvedOptions(sys.argv, ['JOB_NAME'])
 sc = SparkContext()
@@ -18,18 +18,18 @@ job.init(args['JOB_NAME'], args)
 ssm = boto3.client('ssm')
 
 # Retrieve the value of the parameter containing the bucket_name
-parameter_name = 'clickstream_bucket'  
+parameter_name = 'clickstream_bucket'
 response = ssm.get_parameter(Name=parameter_name)
 bucket_name = response['Parameter']['Value']
 
 # Create an S3 client instance
-s3 = boto3.client('s3')  
+s3 = boto3.client('s3')
 
 # Get source events stored in /raw
 get_json = glueContext.create_dynamic_frame.from_options(format_options={"multiline": False}, connection_type="s3", format="json", connection_options={"paths":  ["s3://{}/raw/".format(bucket_name)], "recurse": True}, transformation_ctx="get_json")
 
 # get reference file with geographic data
-get_continents = glueContext.create_dynamic_frame.from_options(format_options={"quoteChar": "\"", "withHeader": True, "separator": ";", "optimizePerformance": False}, connection_type="s3", format="csv", connection_options={"paths":["s3://{}/reference/countries_continents.csv".format(bucket_name)], "recurse": True}, transformation_ctx="get_continents")
+get_continents = glueContext.create_dynamic_frame.from_options(format_options={"quoteChar": "\"", "withHeader": True, "separator": ";", "optimizePerformance": False}, connection_type="s3", format="csv", connection_options={"paths": ["s3://{}/reference/countries_continents.csv".format(bucket_name)], "recurse": True}, transformation_ctx="get_continents")
 
 # convert click date to timestamp
 convert_date = get_json.gs_to_timestamp(colName="timestamp", colType="autodetect", newColName="click-date")

@@ -11,7 +11,7 @@ import datetime
 ssm = boto3.client('ssm')
 
 # Retrieve the value of the parameter containing the bucket_name
-parameter_name = 'clickstream_bucket'  
+parameter_name = 'clickstream_bucket'
 response = ssm.get_parameter(Name=parameter_name)
 bucket_name = response['Parameter']['Value']
 number_of_events_per_request = 20
@@ -20,52 +20,52 @@ s3 = boto3.client('s3')
 
 
 countries_samples = {
-'1':0.07,
-'2':0.005,
-'3':0.01,
-'4':0.03,
-'5':0.03,
-'6':0.005,
-'7':0.02,
-'8':0.01,
-'9':0.01,
-'10':0.01,
-'11':0.01,
-'12':0.02,
-'13':0.005,
-'14':0.01,
-'15':0.005,
-'16':0.02,
-'17':0.02,
-'18':0.01,
-'19':0.02,
-'20':0.03,
-'21':0.01,
-'22':0.02,
-'23':0.01,
-'24':0.02,
-'25':0.01,
-'26':0.03,
-'27':0.01,
-'28':0.005,
-'29':0.02,
-'30':0.01,
-'31':0.02,
-'32':0.005,
-'33':0.01,
-'34':0.02,
-'35':0.03,
-'36':0.01,
-'37':0.005,
-'38':0.03,
-'39':0.005,
-'40':0.02,
-'41':0.02,
-'42':0.01,
-'43':0.01,
-'44':0.005,
-'45':0.03
-}
+                    '1': 0.07,
+                    '2': 0.005,
+                    '3': 0.01,
+                    '4': 0.03,
+                    '5': 0.03,
+                    '6': 0.005,
+                    '7': 0.02,
+                    '8': 0.01,
+                    '9': 0.01,
+                    '10': 0.01,
+                    '11': 0.01,
+                    '12': 0.02,
+                    '13': 0.005,
+                    '14': 0.01,
+                    '15': 0.005,
+                    '16': 0.02,
+                    '17': 0.02,
+                    '18': 0.01,
+                    '19': 0.02,
+                    '20': 0.03,
+                    '21': 0.01,
+                    '22': 0.02,
+                    '23': 0.01,
+                    '24': 0.02,
+                    '25': 0.01,
+                    '26': 0.03,
+                    '27': 0.01,
+                    '28': 0.005,
+                    '29': 0.02,
+                    '30': 0.01,
+                    '31': 0.02,
+                    '32': 0.005,
+                    '33': 0.01,
+                    '34': 0.02,
+                    '35': 0.03,
+                    '36': 0.01,
+                    '37': 0.005,
+                    '38': 0.03,
+                    '39': 0.005,
+                    '40': 0.02,
+                    '41': 0.02,
+                    '42': 0.01,
+                    '43': 0.01,
+                    '44': 0.005,
+                    '45': 0.03
+                    }
 
 
 # Define event types and their probabilities
@@ -94,11 +94,12 @@ product_categories = {
     'other': 0.1
 }
 
+
 # Function to generate random strings
 def random_string(length):
     letters = string.ascii_lowercase
     return ''.join(random.choice(letters) for i in range(length))
-    
+
 
 # Function to generate normally distributed ages
 def generate_age():
@@ -108,6 +109,7 @@ def generate_age():
     age = int(age)  # Convert the scalar value to an integer
     age = max(16, min(80, age))  # Clamp age between 16 and 80
     return age
+
 
 def generate_timestamp():
     today = datetime.datetime.now()
@@ -124,12 +126,12 @@ def generate_event():
     # Choose user action based on probabilities
     user_action = random.choices(list(user_actions.keys()), weights=list(user_actions.values()))[0]
 
-    #user location
+    # user location
     user_location = random.choices(list(countries_samples.keys()), weights=list(countries_samples.values()))[0]
-    
+
     # Generate random age between 16 and 80
-    age =  generate_age()
-    
+    age = generate_age()
+
     # Choose product category based on probabilities (if applicable)
     if event_type == 'click' or event_type == 'purchase':
         product_category = random.choices(list(product_categories.keys()), weights=list(product_categories.values()))[0]
@@ -149,6 +151,7 @@ def generate_event():
 
     return event_data
 
+
 # Function to upload event to S3
 def upload_event_to_s3(event_data):
     event_filename = f"{event_data['event_type']}_{event_data['user_id']}_{event_data['timestamp']}.json"
@@ -159,12 +162,14 @@ def upload_event_to_s3(event_data):
     )
     print(f"Event uploaded to S3: {event_filename}")
 
+
 # Function to handle timeout
 def timeout_handler(signum, frame):
     print(f"Timeout occurred. Exiting script after creating {number_of_events_per_request} events.")
     exit(0)
 
-# Set timeout 
+
+# Set timeout
 signal.signal(signal.SIGALRM, timeout_handler)
 signal.alarm(number_of_events_per_request)
 
