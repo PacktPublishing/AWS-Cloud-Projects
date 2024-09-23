@@ -1,6 +1,6 @@
 # AWS Cloud Projects
 
-<a href="https://www.packtpub.com/en-us/product/aws-cloud-projects-9781835889282"><img src="(https://content.packt.com/B22051/cover_image_small.jpg)" alt="no-image" height="256px" align="right"></a>
+<a href="https://www.packtpub.com/en-us/product/aws-cloud-projects-9781835889282"><img src="https://content.packt.com/B22051/cover_image_small.jpg" alt="AWS Cloud Projects" height="256px" align="right"></a>
 
 This is the code repository for [AWS Cloud Projects](https://www.packtpub.com/en-us/product/aws-cloud-projects-9781835889282), published by Packt.
 
