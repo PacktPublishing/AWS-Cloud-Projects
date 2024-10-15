@@ -57,7 +57,7 @@ With the following software and hardware list you can run all code files present
 
 * Architecting AWS with Terraform [[Packt]](https://www.packtpub.com/en-us/product/architecting-aws-with-terraform-9781803248561) [[Amazon]](https://www.amazon.com/dp/1803248564)
 
-## Get to Know the Author
+## Get to Know the Authors
 **Ivo Pinto**
 , CCIE No. 57162 (R&S, Security, and Data Center), CISSP, is a principal solutions architect with many years of experience in the fields of cloud, automation, and enterprise and data center networking. Ivo has worked at Cisco in different roles and different geographies, and he has led the architecture and deployment of many automated global-scale solutions for Fortune 50 companies that are in production today. In his latest role, he is responsible for the architecture of multiple ISV products at Amazon Web Services (AWS). Ivo has authored two books, Network Automation Made Easy and Automating and Orchestrating Networking with NetDevOps.
 
